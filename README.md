@@ -1,2 +1,2 @@
-# deepseek1
+# deep
 chat
