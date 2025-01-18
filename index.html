@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NVA App</title>
+</head>
+<body>
+  <h1>Neural Value Authority (NVA)</h1>
+  <div>
+    <h2>Upload Audio File</h2>
+    <input type="file" id="audio-file" accept="audio/*" />
+    <button onclick="transcribe()">Transcribe</button>
+  </div>
+  <div>
+    <h2>Transcription</h2>
+    <p id="transcription"></p>
+  </div>
+  <div>
+    <h2>Summary</h2>
+    <p id="summary"></p>
+    <button onclick="summarize()">Summarize</button>
+  </div>
+  <div>
+    <h2>Draft Email</h2>
+    <p id="email"></p>
+    <button onclick="draftEmail()">Draft Email</button>
+  </div>
+
+  <script>
+    async function transcribe() {
+      const fileInput = document.getElementById('audio-file');
+      const file = fileInput.files[0];
+      const formData = new FormData();
+      formData.append('audio', file);
+
+      const response = await fetch('/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
+      document.getElementById('transcription').textContent = data.transcription;
+    }
+
+    async function summarize() {
+      const transcription = document.getElementById('transcription').textContent;
+      const response = await fetch('/summarize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: transcription }),
+      });
+      const data = await response.json();
+      document.getElementById('summary').textContent = data.summary;
+    }
+
+    async function draftEmail() {
+      const summary = document.getElementById('summary').textContent;
+      const response = await fetch('/draft-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ summary }),
+      });
+      const data = await response.json();
+      document.getElementById('email').textContent = data.email;
+    }
+  </script>
+</body>
+</html>
