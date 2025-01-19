@@ -5,251 +5,201 @@ from dotenv import load_dotenv
 from github import Github
 import requests
 import logging
+import json
+import time
+from datetime import datetime
 
-# Load environment variables from .env file
+# Configure detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
 load_dotenv()
 
-# Retrieve required environment variables
-DEEPISEEK_API_KEY = os.getenv('DEEPISEEK_API_KEY')
-GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
-COMMITTER_NAME = os.getenv('COMMITTER_NAME', 'Default Name')
-COMMITTER_EMAIL = os.getenv('COMMITTER_EMAIL', 'default@example.com')
+class GitHubAssistant:
+    def __init__(self):
+        self.github_token = os.getenv('GITHUB_TOKEN')
+        self.deepseek_key = os.getenv('DEEPISEEK_API_KEY')
+        self.g = Github(self.github_token)
+        self.user = self.g.get_user()
+        logger.info(f"Initialized GitHub Assistant for user: {self.user.login}")
 
-# Check for required environment variables
-required_env_vars = ['DEEPISEEK_API_KEY', 'GITHUB_TOKEN', 'COMMITTER_NAME', 'COMMITTER_EMAIL']
-for var in required_env_vars:
-    if not os.getenv(var):
-        logging.error(f"Environment variable {var} is not set.")
-        exit(1)
+    def analyze_repository(self, repo_name):
+        """Comprehensive repository analysis"""
+        try:
+            repo = self.g.get_repo(repo_name)
+            analysis = {
+                "name": repo.name,
+                "description": repo.description,
+                "stats": {
+                    "stars": repo.stargazers_count,
+                    "forks": repo.forks_count,
+                    "issues": repo.open_issues_count,
+                    "created": repo.created_at.strftime("%Y-%m-%d"),
+                    "last_update": repo.updated_at.strftime("%Y-%m-%d")
+                },
+                "files": []
+            }
 
+            # Analyze contents
+            contents = repo.get_contents("")
+            for content in contents:
+                if content.type == "file":
+                    file_analysis = self.analyze_file(repo, content)
+                    analysis["files"].append(file_analysis)
+
+            return analysis
+        except Exception as e:
+            logger.error(f"Error analyzing repository {repo_name}: {str(e)}")
+            raise
+
+    def analyze_file(self, repo, content):
+        """Analyze a single file"""
+        try:
+            file_content = content.decoded_content.decode('utf-8')
+            file_type = content.path.split('.')[-1] if '.' in content.path else 'unknown'
+            
+            analysis = self.get_code_analysis(file_content, file_type)
+            
+            return {
+                "name": content.path,
+                "type": file_type,
+                "size": len(file_content),
+                "content": file_content[:500] + "..." if len(file_content) > 500 else file_content,
+                "analysis": analysis
+            }
+        except Exception as e:
+            logger.error(f"Error analyzing file {content.path}: {str(e)}")
+            return {
+                "name": content.path,
+                "error": str(e)
+            }
+
+    def get_code_analysis(self, code, language):
+        """Get AI analysis of code"""
+        try:
+            response = requests.post(
+                'https://api.deepseek.com/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {self.deepseek_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'deepseek-chat',
+                    'messages': [
+                        {"role": "system", "content": f"You are a code analysis expert. Analyze this {language} code."},
+                        {"role": "user", "content": code}
+                    ]
+                }
+            )
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content']
+        except Exception as e:
+            logger.error(f"Error getting code analysis: {str(e)}")
+            return None
+
+    def create_pull_request(self, repo_name, title, body, base="main"):
+        """Create a pull request with improvements"""
+        try:
+            repo = self.g.get_repo(repo_name)
+            pr = repo.create_pull(
+                title=title,
+                body=body,
+                head="improvements",
+                base=base
+            )
+            return pr.html_url
+        except Exception as e:
+            logger.error(f"Error creating PR: {str(e)}")
+            raise
+
+# Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
-# Initialize GitHub API client
-g = Github(GITHUB_TOKEN)
-logging.basicConfig(level=logging.DEBUG)
+# Initialize GitHub Assistant
+assistant = GitHubAssistant()
 
-# Function to call DeepSeek API
-def call_deepseek(prompt, action):
-    headers = {
-        'Authorization': f'Bearer {DEEPISEEK_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    data = {
-        'model': 'deepseek-chat',
-        'prompt': prompt,
-        'max_tokens': 500
-    }
-    try:
-        response = requests.post('https://api.deepseek.com/beta/completions', headers=headers, json=data)
-        if response.status_code == 200:
-            return response.json()['choices'][0]['text'].strip()
-        else:
-            logging.error(f"DeepSeek API error: {response.status_code}")
-            return f"Error: {response.status_code}"
-    except Exception as e:
-        logging.error(f"Exception in call_deepseek: {str(e)}")
-        return f"Exception: {str(e)}"
-
-# Endpoint to generate code
-@app.route('/generate-code', methods=['POST'])
-def generate_code():
-    try:
-        prompt = request.json['prompt']
-        generated_code = call_deepseek(prompt, action='generate')
-        return jsonify({'code': generated_code})
-    except Exception as e:
-        logging.error(f"Error in generate_code: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to fix code
-@app.route('/fix-code', methods=['POST'])
-def fix_code():
-    try:
-        code = request.json['code']
-        fixed_code = call_deepseek(f"Fix the following code: {code}", action='fix')
-        return jsonify({'fixed_code': fixed_code})
-    except Exception as e:
-        logging.error(f"Error in fix_code: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to analyze code
-@app.route('/analyze-code', methods=['POST'])
-def analyze_code():
-    try:
-        code = request.json['code']
-        analysis = call_deepseek(f"Analyze the following code and provide suggestions for improvement:\n\n{code}", action='analyze')
-        return jsonify({'analysis': analysis})
-    except Exception as e:
-        logging.error(f"Error in analyze_code: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to create a new repository
-@app.route('/create-repo', methods=['POST'])
-def create_repo():
-    try:
-        repo_name = request.json['repo_name']
-        description = request.json.get('description', '')
-        repo = g.get_user().create_repo(name=repo_name, description=description)
-        return jsonify({'repo_url': repo.html_url})
-    except Exception as e:
-        logging.error(f"Error in create_repo: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to push code to GitHub
-@app.route('/push-code', methods=['POST'])
-def push_code():
-    try:
-        repo_name = request.json['repo_name']
-        branch_name = request.json['branch_name']
-        file_name = request.json['file_name']
-        file_content = request.json['file_content']
-        
-        repo = g.get_user().get_repo(repo_name)
-        repo.create_file(
-            path=file_name,
-            message=f"Add {file_name}",
-            content=file_content,
-            branch=branch_name,
-            committer={'name': COMMITTER_NAME, 'email': COMMITTER_EMAIL}
-        )
-        return jsonify({'success': True})
-    except Exception as e:
-        logging.error(f"Error in push_code: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to create a new branch
-@app.route('/create-branch', methods=['POST'])
-def create_branch():
-    try:
-        repo_name = request.json['repo_name']
-        branch_name = request.json['branch_name']
-        base_branch = request.json['base_branch']
-        
-        repo = g.get_user().get_repo(repo_name)
-        base_ref = repo.get_branch(base_branch)
-        repo.create_git_ref(ref=f'refs/heads/{branch_name}', sha=base_ref.commit.sha)
-        return jsonify({'success': True})
-    except Exception as e:
-        logging.error(f"Error in create_branch: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to create an issue
-@app.route('/create-issue', methods=['POST'])
-def create_issue():
-    try:
-        repo_name = request.json['repo_name']
-        title = request.json['title']
-        body = request.json['body']
-        
-        repo = g.get_user().get_repo(repo_name)
-        issue = repo.create_issue(title=title, body=body)
-        return jsonify({'issue_url': issue.html_url})
-    except Exception as e:
-        logging.error(f"Error in create_issue: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to create a GitHub Actions workflow
-@app.route('/create-github-action', methods=['POST'])
-def create_github_action():
-    try:
-        repo_name = request.json['repo_name']
-        workflow_name = request.json['workflow_name']
-        workflow_content = request.json['workflow_content']
-        
-        repo = g.get_user().get_repo(repo_name)
-        repo.create_file(
-            path=f'.github/workflows/{workflow_name}.yml',
-            message=f"Add {workflow_name} workflow",
-            content=workflow_content,
-            branch='main',
-            committer={'name': COMMITTER_NAME, 'email': COMMITTER_EMAIL}
-        )
-        return jsonify({'success': True})
-    except Exception as e:
-        logging.error(f"Error in create_github_action: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to trigger a GitHub Actions workflow
-@app.route('/trigger-github-action', methods=['POST'])
-def trigger_github_action():
-    try:
-        repo_name = request.json['repo_name']
-        workflow_id = request.json['workflow_id']
-        ref = request.json.get('ref', 'main')  # Default to 'main' if not provided
-        
-        repo = g.get_user().get_repo(repo_name)
-        url = f'https://api.github.com/repos/{repo.full_name}/actions/workflows/{workflow_id}/dispatches'
-        headers = {
-            'Authorization': f'token {GITHUB_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-        data = {
-            'ref': ref
-        }
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code == 204:
-            return jsonify({'success': True})
-        else:
-            logging.error(f"Failed to trigger workflow. Status code: {response.status_code}")
-            return jsonify({'error': f'Failed to trigger workflow. Status code: {response.status_code}'}), 500
-    except Exception as e:
-        logging.error(f"Error in trigger_github_action: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# Endpoint to chat with the bot
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
-        user_message = request.json['message']
-        bot_response = call_deepseek(user_message, action='chat')
-        return jsonify({'response': bot_response})
+        message = request.json.get('message', '').lower()
+        logger.info(f"Received message: {message}")
+
+        if "analyze" in message and "repository" in message:
+            # Extract repository name
+            parts = message.split()
+            repo_name = next((p for p in parts if '/' in p), None)
+            
+            if not repo_name:
+                return jsonify({
+                    'response': "Please provide repository name in format owner/repo. Example: analyze repository aviadkim/deep"
+                })
+
+            analysis = assistant.analyze_repository(repo_name)
+            
+            # Format response
+            response = f"Analysis of {analysis['name']}:\n\n"
+            response += f"📊 Statistics:\n"
+            response += f"• Stars: {analysis['stats']['stars']}\n"
+            response += f"• Forks: {analysis['stats']['forks']}\n"
+            response += f"• Open Issues: {analysis['stats']['issues']}\n"
+            response += f"• Created: {analysis['stats']['created']}\n"
+            response += f"• Last Update: {analysis['stats']['last_update']}\n\n"
+            
+            response += "📁 Files Analysis:\n"
+            for file in analysis['files']:
+                response += f"\n### {file['name']} ###\n"
+                if 'error' in file:
+                    response += f"Error: {file['error']}\n"
+                else:
+                    response += f"Type: {file['type']}\n"
+                    if file['analysis']:
+                        response += f"Analysis:\n{file['analysis']}\n"
+                    response += f"\nPreview:\n```\n{file['content']}\n```\n"
+
+            return jsonify({'response': response})
+
+        elif "improve" in message:
+            # Handle code improvement request
+            code = message.split("improve:", 1)[1].strip() if ":" in message else ""
+            if not code:
+                return jsonify({
+                    'response': "Please provide code to improve. Example: improve: def hello(): print('Hello')"
+                })
+                
+            analysis = assistant.get_code_analysis(code, "python")
+            return jsonify({'response': f"Code Analysis:\n{analysis}"})
+
+        else:
+            return jsonify({
+                'response': """I can help you with:
+1. Repository Analysis: "analyze repository owner/repo"
+2. Code Improvement: "improve: [your code here]"
+3. File Analysis: "analyze file owner/repo/path"
+
+Example: analyze repository aviadkim/deep"""
+            })
+
     except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Serve the HTML page
 @app.route('/')
 def index():
-    return '''
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Chat with Bot</title>
-    </head>
-    <body>
-      <h1>Chat with Bot</h1>
-      <div>
-        <input type="text" id="userInput" placeholder="Type your message here...">
-        <button onclick="sendMessage()">Send</button>
-      </div>
-      <div>
-        <h2>Response:</h2>
-        <p id="response"></p>
-      </div>
+    return render_template('index.html')
 
-      <script>
-        async function sendMessage() {
-          const userInput = document.getElementById('userInput').value;
-          const responseElement = document.getElementById('response');
-
-          const response = await fetch('/chat', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ message: userInput }),
-          });
-
-          const data = await response.json();
-          responseElement.textContent = data.response;
-        }
-      </script>
-    </body>
-    </html>
-    '''
-
-# Run the Flask application
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    # Try different ports if 5001 is busy
+    ports = [5001, 5002, 5003, 5004, 5005]
+    
+    for port in ports:
+        try:
+            app.run(debug=True, host='0.0.0.0', port=port)
+            break
+        except OSError:
+            logger.warning(f"Port {port} is in use, trying next port...")
+            continue
